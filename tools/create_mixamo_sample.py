@@ -58,93 +58,109 @@ def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
 def synthesize_walk_and_wave(rig: dict, frames: int = 120, fps: float = 30.0) -> tuple[np.ndarray, np.ndarray]:
     """Generate a smooth humanoid walk + right-hand wave in Mixamo 52-bone local/root space."""
     t = np.arange(frames, dtype=np.float64) / fps
-    cycle = 2.0 * np.pi * (t / 1.0)  # 1.0 s per full gait stride cycle (L + R)
+    cycle = 2.0 * np.pi * (t / 1.0)  # 1.0 s per full L+R gait stride
 
-    local_body = np.zeros((frames, 22, 3), dtype=np.float64)  # XYZ Euler in degrees
+    local_rot = np.broadcast_to(np.eye(3, dtype=np.float64), (frames, 22, 3, 3)).copy()
 
-    # Pelvis: gentle forward pitch, lateral sway, and yaw twist
-    local_body[:, 0, 0] = 4.0 + 1.5 * np.cos(2.0 * cycle)
-    local_body[:, 0, 1] = 5.5 * np.sin(cycle)
-    local_body[:, 0, 2] = 2.5 * np.cos(cycle)
+    def euler_xyz(rx=0.0, ry=0.0, rz=0.0):
+        arr = np.column_stack((
+            np.broadcast_to(rx, (frames,)),
+            np.broadcast_to(ry, (frames,)),
+            np.broadcast_to(rz, (frames,)),
+        ))
+        return Rotation.from_euler('xyz', arr, degrees=True).as_matrix()
+
+    # Pelvis: subtle forward lean, lateral sway, and yaw twist
+    local_rot[:, 0] = euler_xyz(
+        4.0 + 1.5 * np.cos(2.0 * cycle),
+        5.5 * np.sin(cycle),
+        2.5 * np.cos(cycle),
+    )
 
     # Spine counter-rotation
-    local_body[:, 3, 1] = -2.0 * np.sin(cycle)
-    local_body[:, 6, 1] = -2.5 * np.sin(cycle)
-    local_body[:, 9, 1] = -2.5 * np.sin(cycle)
-    local_body[:, 6, 0] = 2.0
+    local_rot[:, 3] = euler_xyz(0.0, -2.0 * np.sin(cycle), 0.0)
+    local_rot[:, 6] = euler_xyz(2.0, -2.5 * np.sin(cycle), 0.0)
+    local_rot[:, 9] = euler_xyz(0.0, -2.5 * np.sin(cycle), 0.0)
 
-    # Wave envelope (frames ~1.2s to 3.4s)
+    # Wave envelope (frames ~1.0s to 3.65s)
     wave_blend = _smoothstep(1.0, 1.45, t) * (1.0 - _smoothstep(3.15, 3.65, t))
     wave_osc = np.sin(2.0 * np.pi * 2.2 * (t - 1.45))
 
     # Head & neck: stabilize forward, gentle turn during wave
-    local_body[:, 12, 1] = -3.0 * np.sin(cycle) - 6.0 * wave_blend
-    local_body[:, 15, 0] = -3.0 + 2.0 * wave_blend
-    local_body[:, 15, 1] = -4.0 * wave_blend
+    local_rot[:, 12] = euler_xyz(0.0, -3.0 * np.sin(cycle) - 6.0 * wave_blend, 0.0)
+    local_rot[:, 15] = euler_xyz(-3.0 + 2.0 * wave_blend, -4.0 * wave_blend, 0.0)
 
-    # Legs (positive X = forward swing / knee bend in canonical Mixamo Y-down/Z-forward frame)
+    # Legs: positive X moves -Y toward -Z (extension/knee bend); negative X swings forward (+Z)
     for leg_idx, knee_idx, foot_idx, toe_idx, phase in ((1, 4, 7, 10, 0.0), (2, 5, 8, 11, np.pi)):
         phi = cycle + phase
-        # Hip flexion/extension: swing forward (-X in Y-down? Verify: +X rotates -Y toward +Z? Let's check!)
-        # Right-hand rule around +X: +Y -> +Z, +Z -> -Y, -Y -> -Z!
-        # Wait: -Y rotated by +theta around +X gives -Y*cos - Z*sin (moves backward -Z).
-        # Rotating -Y forward toward +Z is NEGATIVE X rotation!
-        hip_swing = -24.0 * np.sin(phi) - 4.0
-        local_body[:, leg_idx, 0] = hip_swing
-        # Knee bends backward (-Z) -> POSITIVE X rotation around +X moves -Y toward -Z!
-        knee_bend = 6.0 + 46.0 * np.maximum(0.0, np.cos(phi - 0.55)) ** 1.3 + 8.0 * np.maximum(0.0, -np.sin(phi))
-        local_body[:, knee_idx, 0] = np.clip(knee_bend, 2.0, 62.0)
-        # Ankle pitch balances foot level to floor
-        local_body[:, foot_idx, 0] = -0.35 * (hip_swing + knee_bend) + 6.0 * np.sin(phi + 0.5)
-        # Toe bend during push-off
-        local_body[:, toe_idx, 0] = 20.0 * np.maximum(0.0, np.sin(phi - 0.6))
+        hip_swing = -24.0 * np.sin(phi) - 3.0
+        knee_bend = 6.0 + 48.0 * np.maximum(0.0, np.cos(phi - 0.55)) ** 1.3 + 6.0 * np.maximum(0.0, -np.sin(phi))
+        knee_bend = np.clip(knee_bend, 3.0, 62.0)
+        ankle_pitch = -0.35 * (hip_swing + knee_bend) + 5.0 * np.sin(phi + 0.5)
+        toe_pitch = 20.0 * np.maximum(0.0, np.sin(phi - 0.6))
+        local_rot[:, leg_idx] = euler_xyz(hip_swing, 0.0, 0.0)
+        local_rot[:, knee_idx] = euler_xyz(knee_bend, 0.0, 0.0)
+        local_rot[:, foot_idx] = euler_xyz(ankle_pitch, 0.0, 0.0)
+        local_rot[:, toe_idx] = euler_xyz(toe_pitch, 0.0, 0.0)
 
-    # Left arm: lowered from T-pose (+X -> -Y is +Z rotation? Right-hand rule around +Z: +X -> +Y, so -Z rotates +X toward -Y!)
-    # Check: R_z(-theta) * [1,0,0]^T = [cos, -sin, 0]^T -> +X moves toward -Y!
-    left_swing = 18.0 * np.sin(cycle + np.pi)
-    local_body[:, 13, 2] = -4.0
-    local_body[:, 16, 2] = -70.0
-    local_body[:, 16, 1] = -left_swing  # Right-hand rule around +Y: +X -> -Z, so -Y rotates +X toward +Z (forward)!
-    local_body[:, 18, 1] = -24.0 - 8.0 * np.maximum(0.0, left_swing / 18.0)
+    # Left arm: lowered from +X T-pose via R_z(-72 deg), swung in sagittal YZ plane via extrinsic R_x
+    left_swing = 20.0 * np.sin(cycle + np.pi)
+    local_rot[:, 13] = euler_xyz(0.0, 0.0, -4.0)
+    local_rot[:, 16] = euler_xyz(-left_swing, 0.0, -72.0)
+    # HINGES[2] = (16, 18, 20, (0, -1, 0)): positive rotation around -Y bends +X forearm forward (+Z)
+    left_elbow = np.deg2rad(20.0 + 10.0 * np.maximum(0.0, left_swing / 20.0))
+    local_rot[:, 18] = Rotation.from_rotvec(np.array([0.0, -1.0, 0.0])[None, :] * left_elbow[:, None]).as_matrix()
 
-    # Right arm (-X -> -Y is +Z rotation: R_z(+theta)*[-1,0,0]^T = [-cos, -sin, 0]^T)
-    right_swing = 18.0 * np.sin(cycle)
-    walk_rz = 70.0 * np.ones_like(t)
-    walk_ry = right_swing
-    walk_elbow_y = 24.0 + 8.0 * np.maximum(0.0, right_swing / 18.0)
+    # Right arm: blend between sagittal walk swing (R_z(+72)) and friendly overhead wave (R_z(-38))
+    right_swing = 20.0 * np.sin(cycle)
+    walk_upper = euler_xyz(-right_swing, 0.0, 72.0)
+    wave_upper = euler_xyz(-22.0, 0.0, -38.0 + 6.0 * wave_osc)
+    upper_slerp = []
+    for k in range(frames):
+        w = float(wave_blend[k])
+        r_walk = Rotation.from_matrix(walk_upper[k])
+        r_wave = Rotation.from_matrix(wave_upper[k])
+        rel = (r_walk.inv() * r_wave).as_rotvec()
+        upper_slerp.append((r_walk * Rotation.from_rotvec(w * rel)).as_matrix())
+    local_rot[:, 14] = euler_xyz(0.0, 0.0, 4.0 + 10.0 * wave_blend)
+    local_rot[:, 17] = np.asarray(upper_slerp)
 
-    # Wave pose for right arm: raise upper arm out/up (-Z rotation lifts -X toward +Y), bend elbow up, wave forearm
-    wave_rz = -35.0
-    wave_ry = -15.0
-    wave_elbow_y = 95.0 + 22.0 * wave_osc
-    wave_elbow_x = 15.0 * wave_osc
+    # HINGES[3] = (17, 19, 21, (0, 1, 0)): positive rotation around +Y bends -X forearm forward/upward
+    walk_elbow = 20.0 + 10.0 * np.maximum(0.0, right_swing / 20.0)
+    wave_elbow = 92.0 + 22.0 * wave_osc
+    right_elbow = np.deg2rad((1.0 - wave_blend) * walk_elbow + wave_blend * wave_elbow)
+    local_rot[:, 19] = Rotation.from_rotvec(np.array([0.0, 1.0, 0.0])[None, :] * right_elbow[:, None]).as_matrix()
+    local_rot[:, 21] = euler_xyz(0.0, 0.0, -12.0 * wave_blend * wave_osc)
 
-    local_body[:, 14, 2] = 4.0 + 10.0 * wave_blend
-    local_body[:, 17, 2] = (1.0 - wave_blend) * walk_rz + wave_blend * wave_rz
-    local_body[:, 17, 1] = (1.0 - wave_blend) * walk_ry + wave_blend * wave_ry
-    local_body[:, 19, 1] = (1.0 - wave_blend) * walk_elbow_y + wave_blend * wave_elbow_y
-    local_body[:, 19, 0] = wave_blend * wave_elbow_x
-    local_body[:, 21, 2] = -10.0 * wave_blend * wave_osc
-
-    local_rot = Rotation.from_euler('xyz', local_body.reshape(-1, 3), degrees=True).as_matrix().reshape(frames, 22, 3, 3)
-
-    # Build source world orientations and goals from rig's 22-joint rest
+    # Build source world orientations and floor-grounded root trajectory
     world_22 = local_rot.copy()
     for j, p in enumerate(BODY_PARENTS):
         if p >= 0:
             world_22[:, j] = world_22[:, p] @ world_22[:, j]
 
+    rest_22 = rig['rest'][:22]
+    standing_hips_y = float(-rest_22[[10, 11], 1].min())  # ToeBase at Y=0 in rest
     roots = np.zeros((frames, 3), dtype=np.float64)
     roots[:, 0] = 0.022 * np.sin(cycle)
-    roots[:, 1] = rig['rest'][0, 1] - 0.024 * (1.0 - np.cos(2.0 * cycle))
-    roots[:, 2] = 0.85 * t
+    roots[:, 1] = standing_hips_y - 0.020 * (1.0 - np.cos(2.0 * cycle))
+    roots[:, 2] = 0.92 * t
 
-    rest_22 = rig['rest'][:22]
     goals = np.empty((frames, 22, 3), dtype=np.float64)
     goals[:, 0] = roots
     for j, p in enumerate(BODY_PARENTS):
         if p >= 0:
             goals[:, j] = goals[:, p] + np.einsum('tij,j->ti', world_22[:, p], rest_22[j] - rest_22[p])
+
+    # Keep lowest foot/toe joint at >= 0.02 m above Y=0 floor plane smoothly
+    min_foot_y = goals[:, [7, 8, 10, 11], 1].min(axis=1)
+    floor_lift = 0.02 - float(np.median(min_foot_y))
+    roots[:, 1] += floor_lift
+    goals[:, :, 1] += floor_lift
+    under = goals[:, [7, 8, 10, 11], 1].min(axis=1) < 0.015
+    if under.any():
+        lift = np.maximum(0.0, 0.015 - goals[:, [7, 8, 10, 11], 1].min(axis=1))
+        roots[:, 1] += lift
+        goals[:, :, 1] += lift[:, None]
 
     local_52, _, _ = fit(rig, roots, world_22, goals, fps=fps)
 

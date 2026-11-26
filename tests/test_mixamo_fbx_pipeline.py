@@ -171,9 +171,12 @@ class MixamoFbxPipelineTests(unittest.TestCase):
                 self.assertEqual(len(kv['KeyValueFloat']), 60)
                 self.assertTrue(np.isfinite(kv['KeyValueFloat']).all())
 
-            # Root translation and limb rotations actually animate
+            # Root translation and limb rotations actually animate at standing height
             hips_tx = curves[0]['KeyValueFloat']
+            hips_ty = curves[1]['KeyValueFloat']
             hips_tz = curves[2]['KeyValueFloat']
+            self.assertGreater(float(hips_ty.min()), 0.85)
+            self.assertLess(float(hips_ty.max()), 1.05)
             self.assertGreater(float(hips_tz[-1] - hips_tz[0]), 1.0)
             self.assertGreater(float(hips_tx.max() - hips_tx.min()), 0.01)
 
