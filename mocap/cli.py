@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -137,9 +138,13 @@ def open_app(path):
             arguments = [flag, str(path.parent if flag == '--project' else path)]
         else:
             raise ValueError('Choose a video or a project containing project.json.')
-    command = [str(ROOT / 'runtime/python.exe'), '-I', '-X', 'utf8', '-u', '-B',
-               str(ROOT / 'launch_source.py'), *arguments]
-    subprocess.Popen(command, cwd=ROOT, creationflags=subprocess.CREATE_NEW_CONSOLE, close_fds=True)
+    if os.name == 'nt':
+        command = [str(ROOT / 'runtime/python.exe'), '-I', '-X', 'utf8', '-u', '-B',
+                   str(ROOT / 'launch_source.py'), *arguments]
+        subprocess.Popen(command, cwd=ROOT, creationflags=subprocess.CREATE_NEW_CONSOLE, close_fds=True)
+    else:
+        command = [sys.executable, '-X', 'utf8', '-u', '-B', str(ROOT / 'launch_source.py'), *arguments]
+        subprocess.Popen(command, cwd=ROOT, close_fds=True)
     return {'launch_requested': True, 'path': str(path) if path is not None else None}
 
 
@@ -165,8 +170,9 @@ def main(argv=None):
         mutates = not read_only and not getattr(args, 'dry_run', False)
         with app_lock(ROOT) if mutates else nullcontext():
             verify(ROOT)
-            from .runtime_registry import activate
-            activate(ROOT, 'gui')
+            if os.name == 'nt':
+                from .runtime_registry import activate
+                activate(ROOT, 'gui')
             from .runtime_limits import configure_preview_cpu
             configure_preview_cpu()
             if args.command == 'open':
@@ -187,3 +193,7 @@ def main(argv=None):
     else:
         print(result.get('error', json.dumps(result, ensure_ascii=False)), file=sys.stderr)
     return code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

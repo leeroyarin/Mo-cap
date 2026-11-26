@@ -17,8 +17,11 @@ def configure(root):
 def verify(root):
     if (root/'.setup/git-sync.pending').exists():
         raise RuntimeError('Update was not completed. Run install.cmd to repair before launching.')
+    state_path = root/'.setup/git-runtime-state.json'
+    if os.name != 'nt' and not state_path.is_file():
+        return
     try:
-        state = json.loads((root/'.setup/git-runtime-state.json').read_text(encoding='utf8'))
+        state = json.loads(state_path.read_text(encoding='utf8'))
         for key, path in [('lock_sha256', 'installer/runtime-lock.json'), ('registry_sha256', 'mocap/runtime_registry.py'),
                           ('support_sha256', 'installer/git-support-lock.json'), ('assets_sha256', 'installer/external-assets.json')]:
             if state[key] != hashlib.sha256((root/path).read_bytes()).hexdigest():
