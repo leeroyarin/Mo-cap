@@ -454,7 +454,10 @@ def prepare_people_scene(root, env, report):
         for _, project in projects:
             context(root, project)
     except (OSError, ValueError, KeyError):
-        command = [str(ROOT / 'runtime/python.exe'), '-I', '-X', 'utf8', str(ROOT / 'scene_boot.py'), str(root)]
+        import sys
+        python = str(ROOT / 'runtime/python.exe') if os.name == 'nt' else sys.executable
+        flags = ['-I', '-X', 'utf8'] if os.name == 'nt' else ['-X', 'utf8']
+        command = [python, *flags, str(ROOT / 'scene_boot.py'), str(root)]
         run_process(command, 'Prepare shared scene', env, report, env['RGB_MOCAP_RESOURCE_SAFETY'] == '1')
 
 
