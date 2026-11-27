@@ -250,27 +250,32 @@ def landmarks_to_mixamo(npz_path: Path, rig: dict) -> tuple[np.ndarray, np.ndarr
     return roots, local_52, fps
 
 
-def find_best_loop_window(rig: dict, roots: np.ndarray, local_52: np.ndarray, fps: float, min_sec: float = 3.2) -> tuple[int, int]:
+def find_best_loop_window(rig: dict, roots: np.ndarray, local_52: np.ndarray, fps: float, min_sec: float = 3.2, max_sec: float = 8.0) -> tuple[int, int]:
     """Find [i0, i1) after warm-up where pose and velocity match best for a seamless loop."""
     pos, _ = fk(rig, roots, local_52)
     pts = pos[:, :22]
     vel = np.gradient(pts, axis=0)
-    # Focus heavily on upper body (arms/wrists/spine/head) after frame 30 (converged tracking)
     weights = np.ones((1, 22, 1), dtype=np.float64)
     weights[:, [16, 17, 18, 19, 20, 21]] = 2.5
+    p_flat = (pts * weights).reshape(len(pts), -1)
+    v_flat = (vel * weights).reshape(len(pts), -1)
     start_min = min(35, len(pts) // 4)
     min_len = max(int(round(min_sec * fps)), 45)
+    max_len = max(min_len + 1, int(round(max_sec * fps)))
     best_score = float('inf')
-    best_pair = (start_min, len(pts))
+    best_pair = (start_min, min(len(pts), start_min + min_len))
     for i0 in range(start_min, len(pts) - min_len):
-        for i1 in range(i0 + min_len, len(pts) - 4):
-            dp = np.linalg.norm((pts[i1] - pts[i0]) * weights[0], axis=-1).mean()
-            dv = np.linalg.norm((vel[i1] - vel[i0]) * weights[0], axis=-1).mean()
-            # Slight preference for longer loops when quality is comparable
-            score = dp + 0.35 * dv - 0.00015 * (i1 - i0)
-            if score < best_score:
-                best_score = score
-                best_pair = (i0, i1)
+        hi = min(len(pts) - 4, i0 + max_len)
+        if i0 + min_len >= hi:
+            continue
+        i1s = np.arange(i0 + min_len, hi)
+        dp = np.linalg.norm(p_flat[i1s] - p_flat[i0], axis=1)
+        dv = np.linalg.norm(v_flat[i1s] - v_flat[i0], axis=1)
+        scores = dp + 0.35 * dv - 0.0002 * (i1s - i0)
+        k = int(np.argmin(scores))
+        if float(scores[k]) < best_score:
+            best_score = float(scores[k])
+            best_pair = (i0, int(i1s[k]))
     return best_pair
 
 
